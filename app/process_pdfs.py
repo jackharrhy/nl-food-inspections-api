@@ -2,9 +2,7 @@ from datetime import datetime
 
 
 def extract_inspection_type_and_date(page):
-    cropped_region = page.within_bbox(
-        (0, 145, 160, page.height - 100)
-    )  # Adjust x0, y0, x1, y1
+    cropped_region = page.within_bbox((0, 145, 160, page.height - 100))
     lines = cropped_region.extract_text_lines()
 
     values = []
