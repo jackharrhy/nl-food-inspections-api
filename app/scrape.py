@@ -1,5 +1,10 @@
+import time
 import httpx
 from bs4 import BeautifulSoup
+from loguru import logger
+from urllib.parse import urlparse
+from datetime import datetime
+from db import Row, get_pdf, store_pdf, PDF_TTL
 
 BASE_URL = "https://www.gov.nl.ca/dgsnl/inspections/public-alpha/"
 
@@ -32,14 +37,20 @@ def get_number_of_pages(client: httpx.Client) -> int:
 def get_page_data(client: httpx.Client, page_number: int):
     url = get_page_url(page_number)
     response = client.get(url)
+
+    logger.info(f"Scraping page {page_number} from {url}")
+
     soup = BeautifulSoup(response.text, "html.parser")
 
     entry_content = soup.find("div", class_="entry-content")
 
     table = entry_content.find("table")
 
-    rows = []
-    for row in table.find_all("tr"):
+    rows: list[Row] = []
+    for i, row in enumerate(table.find_all("tr")):
+        if i == 0:
+            continue
+
         cells = []
         for i, cell in enumerate(row.find_all(["td", "th"])):
             if i == 0:
@@ -47,42 +58,84 @@ def get_page_data(client: httpx.Client, page_number: int):
 
                 if a_tag:
                     cells.append(a_tag.get("href"))
+                else:
+                    raise ValueError(f"No a tag found in cell {cell}")
 
             text = cell.text.strip()
             text = text.split("\t")[0]
             cells.append(text)
 
-        if cells:
-            rows.append(cells)
+        if len(cells) != 4:
+            logger.debug(f"Problematic row: {row}, {cells}")
+            raise ValueError(f"Expected 4 cells, got {len(cells)}")
 
+        [pdf_url, name, location, region] = cells
+
+        try:
+            result = urlparse(pdf_url)
+            if not all([result.scheme, result.netloc]):
+                raise ValueError(f"Invalid PDF URL: {pdf_url}")
+        except Exception:
+            raise ValueError(f"Invalid PDF URL: {pdf_url}")
+
+        if cells:
+            rows.append(
+                Row(
+                    pdf_url=pdf_url,
+                    name=name,
+                    location=location,
+                    region=region,
+                )
+            )
     rows = rows[1:]
+
+    logger.info(f"Found {len(rows)} rows on page {page_number}")
 
     return rows
 
 
-if __name__ == "__main__":
-    import tempfile
-    import pdfplumber
-    from process_pdfs import process_page
+def download_pdf(client: httpx.Client, row: Row) -> Row:
+    response = client.get(row.pdf_url)
 
-    client = get_client()
-    print(get_number_of_pages(client))
+    row.pdf = response.content
+    row.time_since_scraped = datetime.now()
 
-    page_data = get_page_data(client, 1)
+    return row
+
+
+def get_populated_row(client: httpx.Client, row: Row) -> Row:
+    populated_row = get_pdf(row)
+
+    if (
+        populated_row is None
+        or populated_row.time_since_scraped < datetime.now() - PDF_TTL
+    ):
+        populated_row = download_pdf(client, populated_row or row)
+        store_pdf(populated_row)
+
+    return populated_row
+
+
+def scrape_page(client: httpx.Client, page_number: int) -> list[Row]:
+    page_data = get_page_data(client, page_number)
+
+    logger.info(f"Scraping page {page_number} with {len(page_data)} rows")
 
     for row in page_data:
-        print(row)
+        populated_row = get_populated_row(client, row)
 
-    if page_data:
-        pdf_url = page_data[1][0]
-        pdf_response = client.get(pdf_url)
+        logger.info(f"Scraped {populated_row.name} from {populated_row.pdf_url}")
 
-        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp_file:
-            tmp_file.write(pdf_response.content)
-            tmp_file.flush()
+        time.sleep(2)
 
-            with pdfplumber.open(tmp_file.name) as pdf:
-                for page in pdf.pages:
-                    all_lines, records = process_page(page)
-                    for record in records:
-                        print(record)
+
+if __name__ == "__main__":
+    client = get_client()
+
+    number_of_pages = get_number_of_pages(client)
+
+    logger.info(f"Found {number_of_pages} pages")
+
+    for page_number in range(1, number_of_pages + 1):
+        scrape_page(client, page_number)
+        time.sleep(5)

@@ -1,4 +1,8 @@
+from io import BytesIO
+
+import pdfplumber
 from datetime import datetime
+from typing import Any, Generator
 
 
 def extract_inspection_type_and_date(page):
@@ -188,3 +192,10 @@ def debug_page(page):
 
         print(json.dumps(record, indent=2, default=str))
     return im
+
+
+def process_pdf(pdf: bytes) -> Generator[Any, None, None]:
+    with pdfplumber.open(BytesIO(pdf)) as pdf:
+        for page in pdf.pages:
+            _, records = process_page(page)
+            yield from records
