@@ -103,7 +103,7 @@ def download_pdf(client: httpx.Client, row: Row) -> Row:
     return row
 
 
-def get_populated_row(client: httpx.Client, row: Row) -> Row:
+def get_populated_row(client: httpx.Client, row: Row) -> tuple[Row, bool]:
     populated_row = get_pdf(row)
 
     if (
@@ -112,8 +112,9 @@ def get_populated_row(client: httpx.Client, row: Row) -> Row:
     ):
         populated_row = download_pdf(client, populated_row or row)
         store_pdf(populated_row)
+        return populated_row, True
 
-    return populated_row
+    return populated_row, False
 
 
 def scrape_page(client: httpx.Client, page_number: int) -> list[Row]:
@@ -122,11 +123,14 @@ def scrape_page(client: httpx.Client, page_number: int) -> list[Row]:
     logger.info(f"Scraping page {page_number} with {len(page_data)} rows")
 
     for row in page_data:
-        populated_row = get_populated_row(client, row)
+        populated_row, is_new = get_populated_row(client, row)
 
         logger.info(f"Scraped {populated_row.name} from {populated_row.pdf_url}")
 
-        time.sleep(2)
+        if is_new:
+            time.sleep(2)
+        else:
+            logger.info("Already scraped")
 
 
 if __name__ == "__main__":
@@ -138,4 +142,3 @@ if __name__ == "__main__":
 
     for page_number in range(1, number_of_pages + 1):
         scrape_page(client, page_number)
-        time.sleep(5)
